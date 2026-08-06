@@ -17,9 +17,10 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 set -euo pipefail
 
-SCRIPTS_DIR="${BASH_SOURCE[0]%/*}"
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${DEST_DIR:="$HOME/.local/bin"}"
 : "${SERVICE_DIR:="$HOME/.config/systemd/user"}"
+: "${DESKTOP_DIR:="$HOME/.local/share/applications"}"
 
 MISSING=()
 
@@ -50,6 +51,7 @@ fi
 
 mkdir -p "$DEST_DIR/share/locale/es/LC_MESSAGES"
 mkdir -p "$SERVICE_DIR"
+mkdir -p "$DESKTOP_DIR"
 
 cp "$SCRIPTS_DIR/mydisplays" "$DEST_DIR/mydisplays"
 chmod +x "$DEST_DIR/mydisplays"
@@ -66,20 +68,11 @@ echo "Copiado: $DEST_DIR/mydisplays-warp"
 cp -r "$SCRIPTS_DIR/share/locale"/* "$DEST_DIR/share/locale/"
 echo "Copiados: archivos de idioma"
 
-cat > "$SERVICE_DIR/easy-pointer.service" << 'EOF'
-[Unit]
-Description=Easy Pointer - salto de cursor entre monitores Hyprland
+cp "$SCRIPTS_DIR/easy-pointer.service" "$SERVICE_DIR/easy-pointer.service"
+echo "Copiado: $SERVICE_DIR/easy-pointer.service"
 
-[Service]
-ExecStart=%h/.local/bin/mydisplays-warp
-Restart=on-failure
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-EOF
-
-echo "Creado: $SERVICE_DIR/easy-pointer.service"
+cp "$SCRIPTS_DIR/mydisplays.desktop" "$DESKTOP_DIR/mydisplays.desktop"
+echo "Copiado: $DESKTOP_DIR/mydisplays.desktop"
 
 systemctl --user daemon-reload 2>/dev/null || true
 
@@ -89,5 +82,5 @@ echo ""
 echo "Para iniciar Easy Pointer ahora:"
 echo "  systemctl --user enable --now easy-pointer.service"
 echo ""
-echo "Para ejecutar MyDisplays:"
+echo "Para ejecutar MyDisplays (o desde el menú de apps):"
 echo "  mydisplays"
