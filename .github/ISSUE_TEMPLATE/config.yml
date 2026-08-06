@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Preguntas y dudas / Support
+    url: https://github.com/unobbb-bit/mydisplays/discussions
+    about: Pregunta antes de abrir un issue / Ask before opening an issue

@@ -96,6 +96,23 @@ cd tests && python3 -m unittest discover -s . -t ..
 
 ---
 
+## Contribuir / Contributing
+
+¿Te gusta la app y quieres sumarte? Todo aporte es bienvenido, sobre todo ayuda
+técnica, porque el autor no es programador (ver Disclaimer).
+
+- **Bugs e ideas**: abre un issue con la plantilla de
+  [bug report](https://github.com/unobbb-bit/mydisplays/issues/new?template=bug_report.yml)
+  o de [feature request](https://github.com/unobbb-bit/mydisplays/issues/new?template=feature_request.yml).
+- **Tareas para empezar**: issues etiquetados
+  [`good first issue`](https://github.com/unobbb-bit/mydisplays/labels/good%20first%20issue)
+  y [`help wanted`](https://github.com/unobbb-bit/mydisplays/labels/help%20wanted).
+- **Buscamos mantenedores**: si sabes Python/GTK4 y la idea te gusta, este
+  proyecto necesita a alguien que lo mantenga a largo plazo. Escríbenos en
+  [Discussions](https://github.com/unobbb-bit/mydisplays/discussions).
+
+---
+
 ## Historia / Background
 
 Este proyecto **no es un fork** de `wdisplays` / `displays`: está escrito desde

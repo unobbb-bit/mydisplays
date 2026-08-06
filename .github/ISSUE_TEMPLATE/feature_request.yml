@@ -1,0 +1,16 @@
+name: Solicitar función / Feature request
+description: Idea para mejorar la app / Idea for the app
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: desc
+    attributes:
+      label: Qué te gustaría / What you'd like
+      description: Describe la función o mejora que quieres.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Para qué la usarías / What you'd use it for
