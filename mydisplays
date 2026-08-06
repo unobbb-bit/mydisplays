@@ -1517,10 +1517,10 @@ class MyDisplaysWindow(Adw.ApplicationWindow):
     def on_about(self):
         about = Adw.AboutWindow(
             application_name=_("MyDisplays"),
-            version="1.0",
+            version="1.0.0",
             developer_name=_("MyDisplays"),
             comments=_("Gestor visual de monitores para Hyprland"),
-            license_type=Gtk.License.MIT_X11,
+            license_type=Gtk.License.GPL_3_0,
         )
         about.present()
 
