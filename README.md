@@ -1,11 +1,11 @@
 # MyDisplays
 
 Configuración visual de monitores para **Hyprland** con interfaz GTK4 / Libadwaita.
-Arrastra tus monitores en un canvas, ajusta resolución, escala, rotación y brillo,
+Arrastra tus monitores en un canvas, ajusta resolución, escala, rotación y mirror,
 aplica la configuración con un clic y guarda perfiles.
 
 Visual monitor layout configuration for **Hyprland** with a GTK4 / Libadwaita UI.
-Drag your monitors on a canvas, adjust resolution, scale, rotation and brightness,
+Drag your monitors on a canvas, adjust resolution, scale, rotation and mirroring,
 apply the layout with one click and save profiles.
 
 ![hyprland](https://img.shields.io/badge/Hyprland-0.56-blue) ![gtk4](https://img.shields.io/badge/GTK4-4.22-green) ![license](https://img.shields.io/badge/license-GPLv3-orange) ![python](https://img.shields.io/badge/Python-3.14-blue)
@@ -17,7 +17,6 @@ apply the layout with one click and save profiles.
 - **Canvas visual** arrastra los monitores como en wdisplays, con zoom y desplazamiento.
 - **Anti-superposición**: los monitores nunca se superponen al arrastrarlos (funciona con cualquier número de monitores).
 - **Resolución / refresh / escala / rotación / mirror** por monitor, con detección de modos reales vía `hyprctl`.
-- **Brillo**: control deslizante para monitores compatibles (`brightnessctl`).
 - **Perfiles**: guarda y restaura disposiciones completas con un clic.
 - **Identify**: resalta cada monitor con su nombre durante unos segundos.
 - **Auto-revert**: si la configuración aplicada deja la pantalla en negro, se revierte en 10 segundos.
@@ -37,13 +36,12 @@ Un daemon en systemd que salta el cursor al monitor vecino cuando llegas al bord
 - Python 3.10+
 - GTK 4.0+ con `python3-gi`
 - Libadwaita (`python3-gi` + `libadwaita`) y Gtk4LayerShell
-- `brightnessctl` (opcional, solo para el control de brillo)
 - `systemd` (opcional, solo para el daemon Easy Pointer)
 
 ### Arch Linux
 
 ```bash
-sudo pacman -S python-gobject gtk4 libadwaita gtk4-layer-shell brightnessctl
+sudo pacman -S python-gobject gtk4 libadwaita gtk4-layer-shell
 ```
 
 ---
