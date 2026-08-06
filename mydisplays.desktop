@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=MyDisplays
+Comment=Gestiona monitores, perfiles y salto de cursor
+Exec=mydisplays
+Icon=video-display
+Terminal=false
+Type=Application
+Categories=Settings;HardwareSettings;X-Hyprland;
+StartupNotify=true

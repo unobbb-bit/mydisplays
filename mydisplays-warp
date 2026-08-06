@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+#
+# MyDisplays warp daemon — salta el cursor entre monitores en Hyprland
+# Copyright (C) 2026 unobbb-bit <unobbb@gmail.com>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""Daemon que salta el cursor entre monitores cuando cruza bordes o gaps."""
+
+import subprocess
+import json
+import time
+import sys
+
+
+MONITOR_REFRESH_INTERVAL = 3.0
+WARP_COOLDOWN = 0.2
+THRESHOLD = 5
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+def get_monitors():
+    result = subprocess.run(
+        ["hyprctl", "monitors", "-j"], capture_output=True, text=True
+    )
+    data = json.loads(result.stdout)
+    monitors = []
+    for m in data:
+        h = m["height"] / m["scale"]
+        w = m["width"] / m["scale"]
+        monitors.append({
+            "name": m["name"],
+            "x": m["x"],
+            "y": m["y"],
+            "w": w,
+            "h": h,
+            "right": m["x"] + w,
+            "bottom": m["y"] + h,
+        })
+    return monitors
+
+
+def get_cursor():
+    result = subprocess.run(
+        ["hyprctl", "cursorpos"], capture_output=True, text=True
+    )
+    parts = result.stdout.strip().split(",")
+    return int(parts[0]), int(parts[1])
+
+
+def warp_cursor(x, y):
+    subprocess.run(
+        ["hyprctl", "dispatch", "movecursor", str(x), str(y)],
+        capture_output=True,
+    )
+
+
+def find_monitor(monitors, cx, cy):
+    for m in monitors:
+        if m["x"] <= cx <= m["right"] and m["y"] <= cy <= m["bottom"]:
+            return m
+    return None
+
+
+def proportional_y(current, cy, other):
+    ratio = (cy - current["y"]) / current["h"]
+    ty = other["y"] + ratio * other["h"]
+    return int(max(other["y"], min(ty, other["bottom"] - 1)))
+
+
+def proportional_x(current, cx, other):
+    ratio = (cx - current["x"]) / current["w"]
+    tx = other["x"] + ratio * other["w"]
+    return int(max(other["x"], min(tx, other["right"] - 1)))
+
+
+_last_warp = 0.0
+_prev_x = None
+_prev_y = None
+
+
+def check_edges(monitors):
+    global _last_warp, _prev_x, _prev_y
+
+    now = time.monotonic()
+    if now - _last_warp < WARP_COOLDOWN:
+        return
+
+    try:
+        cx, cy = get_cursor()
+    except Exception:
+        return
+
+    current = find_monitor(monitors, cx, cy)
+
+    # --- Cursor in gap (not on any monitor) ---
+    if not current:
+        if _prev_x is not None:
+            prev_mon = find_monitor(monitors, _prev_x, _prev_y)
+            if prev_mon:
+                dx = cx - _prev_x
+                dy = cy - _prev_y
+
+                for other in monitors:
+                    if other["name"] == prev_mon["name"]:
+                        continue
+
+                    if dx > 0 and other["x"] >= prev_mon["right"]:
+                        y = proportional_y(prev_mon, _prev_y, other)
+                        warp_cursor(other["x"] + 11, y)
+                        _last_warp = now
+                        log(
+                            f"warp R (gap) {prev_mon['name']} -> "
+                            f"{other['name']} @ {other['x']+11},{y}"
+                        )
+                        break
+
+                    if dx < 0 and other["right"] <= prev_mon["x"]:
+                        y = proportional_y(prev_mon, _prev_y, other)
+                        warp_cursor(int(other["right"] - 11), y)
+                        _last_warp = now
+                        log(
+                            f"warp L (gap) {prev_mon['name']} -> "
+                            f"{other['name']} @ {int(other['right']-11)},{y}"
+                        )
+                        break
+
+                    if dy > 0 and other["y"] >= prev_mon["bottom"]:
+                        x = proportional_x(prev_mon, _prev_x, other)
+                        warp_cursor(x, other["y"] + 11)
+                        _last_warp = now
+                        log(
+                            f"warp D (gap) {prev_mon['name']} -> "
+                            f"{other['name']} @ {x},{other['y']+11}"
+                        )
+                        break
+
+                    if dy < 0 and other["bottom"] <= prev_mon["y"]:
+                        x = proportional_x(prev_mon, _prev_x, other)
+                        warp_cursor(x, int(other["bottom"] - 11))
+                        _last_warp = now
+                        log(
+                            f"warp U (gap) {prev_mon['name']} -> "
+                            f"{other['name']} @ {x},{int(other['bottom']-11)}"
+                        )
+                        break
+
+        _prev_x, _prev_y = cx, cy
+        return
+
+    # --- Cursor on a monitor ---
+    dx = cx - _prev_x if _prev_x is not None else 0
+    dy = cy - _prev_y if _prev_y is not None else 0
+    _prev_x, _prev_y = cx, cy
+
+    best = None
+    best_other = None
+    best_dir = ""
+
+    for other in monitors:
+        if other["name"] == current["name"]:
+            continue
+
+        dr = current["right"] - cx
+        if dx > 0 and dr < THRESHOLD and other["x"] >= current["right"]:
+            y = proportional_y(current, cy, other)
+            d = other["x"] - current["right"]
+            if best is None or d < best[0]:
+                best = (d, other["x"] + 11, y)
+                best_other = other
+                best_dir = "R"
+
+        dl = cx - current["x"]
+        if dx < 0 and dl < THRESHOLD and other["right"] <= current["x"]:
+            y = proportional_y(current, cy, other)
+            d = current["x"] - other["right"]
+            if best is None or d < best[0]:
+                best = (d, int(other["right"] - 11), y)
+                best_other = other
+                best_dir = "L"
+
+        db = current["bottom"] - cy
+        if dy > 0 and db < THRESHOLD and other["y"] >= current["bottom"]:
+            x = proportional_x(current, cx, other)
+            d = other["y"] - current["bottom"]
+            if best is None or d < best[0]:
+                best = (d, x, other["y"] + 11)
+                best_other = other
+                best_dir = "D"
+
+        dt = cy - current["y"]
+        if dy < 0 and dt < THRESHOLD and other["bottom"] <= current["y"]:
+            x = proportional_x(current, cx, other)
+            d = current["y"] - other["bottom"]
+            if best is None or d < best[0]:
+                best = (d, x, int(other["bottom"] - 11))
+                best_other = other
+                best_dir = "U"
+
+    if best:
+        _last_warp = now
+        warp_cursor(best[1], best[2])
+        log(
+            f"warp {best_dir} (edge) {current['name']} -> "
+            f"{best_other['name']} @ {best[1]},{best[2]}"
+        )
+
+
+if __name__ == "__main__":
+    log("=== daemon starting ===")
+    last_refresh = 0.0
+    monitors = []
+
+    while not monitors:
+        try:
+            monitors = get_monitors()
+        except Exception:
+            time.sleep(1)
+
+    log(f"monitors: {[m['name'] for m in monitors]}")
+
+    while True:
+        try:
+            now = time.monotonic()
+            if now - last_refresh > MONITOR_REFRESH_INTERVAL:
+                last_refresh = now
+                new_mons = get_monitors()
+                if new_mons:
+                    before = [(m["name"], m["x"], m["y"]) for m in monitors]
+                    after = [(m["name"], m["x"], m["y"]) for m in new_mons]
+                    if before != after:
+                        log(f"monitors changed: {after}")
+                    monitors = new_mons
+            check_edges(monitors)
+            time.sleep(0.05)
+        except (subprocess.SubprocessError, json.JSONDecodeError) as e:
+            log(f"error: {e}")
+            time.sleep(1)
+        except FileNotFoundError as e:
+            log(f"file not found: {e}")
+            time.sleep(1)
+        except KeyboardInterrupt:
+            log("=== daemon stopped ===")
+            break

@@ -1,0 +1,315 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-06-07 12:28+0200\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: /home/betto/.local/bin/mydisplays:537
+msgid "No hay monitores"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:585
+msgid "Seleccionar para editar"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:603 /home/betto/.local/bin/mydisplays:1481
+#: /home/betto/.local/bin/mydisplays:1483
+msgid "MyDisplays"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:635
+msgid "MyDisplays iniciado"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:652 /home/betto/.local/bin/mydisplays:1472
+msgid "Ayuda"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:658
+msgid "Acerca de"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:664
+msgid "Ver logs"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:674
+msgid "Menú"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:715
+msgid "Arrastra monitores para cambiar posición"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:725
+msgid "Alejar"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:736
+msgid "Acercar"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:773
+msgid "Editar"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:776
+msgid "Resolución"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:782
+msgid "Escala"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:791
+msgid "Posición X"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:800
+msgid "Posición Y"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:809
+msgid "Rotación"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:810
+msgid "0°"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:810
+msgid "90°"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:810
+msgid "180°"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:810
+msgid "270°"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:817
+msgid "Espejo H"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:828 /home/betto/.local/bin/mydisplays:1371
+msgid "Guardar"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:834 /home/betto/.local/bin/mydisplays:1085
+#: /home/betto/.local/bin/mydisplays:1370
+msgid "Cancelar"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:841 /home/betto/.local/bin/mydisplays:1366
+msgid "Guardar perfil"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:846 /home/betto/.local/bin/mydisplays:1055
+msgid "Cargar perfil"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:856
+msgid "Identificar Displays"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:865
+msgid "Easy Pointer"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:866
+msgid "Salta el cursor entre monitores al tocar bordes contiguos"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1033
+msgid "La configuración se guardará con errores"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1055
+msgid "Selecciona un perfil:"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1074
+#, python-brace-format
+msgid "Eliminar '{}'"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1086
+msgid "Aplicar"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1112
+#, python-brace-format
+msgid "Perfil eliminado: {}"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1113
+msgid "Perfil eliminado"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1268
+msgid "Error al aplicar configuración"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1269
+#, python-brace-format
+msgid "Error al guardar: {}"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1273
+msgid "Config guardada en monitors.conf | reload OK"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1277
+#: /home/betto/.local/bin/mydisplays:1418
+msgid "¿Funciona correctamente?"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1278
+msgid "Se revertirá en 10 segundos si no confirmas."
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1280
+msgid "Revertir"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1281
+#: /home/betto/.local/bin/mydisplays:1422
+msgid "Sí, mantener"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1318
+msgid "Configuración guardada"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1340
+msgid "Cambios revertidos"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1341
+msgid "Save revertido"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1366
+msgid "Escribe un nombre para este perfil:"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1368
+msgid "Ej: HDMI rotado"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1383
+#, python-brace-format
+msgid "Perfil '{}' guardado"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1384
+#, python-brace-format
+msgid "Perfil guardado: {}"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1395
+msgid "Error"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1395
+msgid "Perfil no encontrado"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1408
+msgid "Error al aplicar perfil"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1409
+#, python-brace-format
+msgid "Aplicar perfil {}: {}"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1413
+#, python-brace-format
+msgid "Perfil aplicado: {}"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1419
+#, python-brace-format
+msgid ""
+"Perfil: {}\n"
+"Se revertirá en 10 segundos si no confirmas."
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1421
+msgid "No, revertir"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1435
+#, python-brace-format
+msgid "Perfil '{}' aplicado"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1436
+#, python-brace-format
+msgid "Perfil confirmado: {}"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1467
+#, python-brace-format
+msgid "Perfil '{}' revertido"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1468
+#, python-brace-format
+msgid "Perfil revertido: {}"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1473
+msgid ""
+"Arrastra los monitores en el canvas para cambiar su posición.\n"
+"\n"
+"Usa los botones +/− para ajustar el zoom.\n"
+"\n"
+"Selecciona un monitor para editar resolución, escala, posición y rotación.\n"
+"\n"
+"Los perfiles guardados se pueden cargar desde el botón \"Cargar perfil\"."
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1484
+msgid "Gestor visual de monitores para Hyprland"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1491
+msgid "Logs"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1491
+msgid "No hay logs aún."
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1496
+msgid "Logs - MyDisplays"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1502
+msgid "(log vacío)"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1580
+msgid "OK"
+msgstr ""
+
+#: /home/betto/.local/bin/mydisplays:1657
+msgid "MyDisplays ya está en ejecución."
+msgstr ""

@@ -1,0 +1,1713 @@
+#!/usr/bin/env python3
+#
+# MyDisplays — configuración visual de monitores para Hyprland
+# Copyright (C) 2026 unobbb-bit <unobbb@gmail.com>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+import ctypes
+import ctypes.util
+_lib_path = ctypes.util.find_library("gtk4-layer-shell")
+if _lib_path:
+    ctypes.CDLL(_lib_path, ctypes.RTLD_GLOBAL)
+
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+gi.require_version("Gtk4LayerShell", "1.0")
+from gi.repository import Gtk, Adw, GLib, Gdk, Gtk4LayerShell
+
+import gettext
+import locale
+import subprocess
+import json
+import os
+import shutil
+import copy
+import logging
+import math
+import sys
+import atexit
+
+import mydisplays_geom as geom
+
+LOCALE_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "share", "locale")
+try:
+    lang = locale.getlocale(locale.LC_MESSAGES)[0]
+except Exception:
+    lang = None
+if not lang:
+    lang = os.environ.get("LANG")
+t = gettext.translation("mydisplays", LOCALE_DIR, languages=[lang], fallback=True)
+_ = t.gettext
+
+PID_FILE = "/tmp/mydisplays.pid"
+SCRIPT_PATH = os.path.realpath(__file__)
+
+
+def check_single_instance():
+    if os.path.exists(PID_FILE):
+        with open(PID_FILE) as f:
+            old_pid = f.read().strip()
+        if old_pid and os.path.exists(f"/proc/{old_pid}"):
+            try:
+                with open(f"/proc/{old_pid}/comm") as f:
+                    if "python" in f.read():
+                        return False
+            except (FileNotFoundError, ProcessLookupError):
+                pass
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    atexit.register(lambda: os.path.exists(PID_FILE) and os.remove(PID_FILE))
+    return True
+
+CONFIG_DIR = os.path.expanduser("~/.config/hypr")
+PROFILES_DIR = os.path.join(CONFIG_DIR, "monitor-profiles")
+MONITOR_CONF = os.path.join(CONFIG_DIR, "monitors.conf")
+PRECONF = os.path.join(CONFIG_DIR, "monitors.conf.preact")
+LOG_FILE = os.path.join(PROFILES_DIR, "mydisplays.log")
+WARP_STATE_FILE = os.path.join(PROFILES_DIR, "easy-pointer.state")
+WARP_SERVICE = "easy-pointer.service"
+
+CSS_EXTRA = """
+button { transition: background-color 500ms, color 500ms, border-color 500ms; }
+scrollbar.vertical slider { min-width: 9px; }
+scrollbar.horizontal slider { min-height: 9px; }
+scrollbar { border: none; background: transparent; }
+.canvas-scrolled { border: none; outline: none; box-shadow: none; background: none; min-height: 0; }
+.canvas-scrolled undershoot, .canvas-scrolled overshoot { border: none; background: none; }
+.canvas-scrolled:focus { outline: none; border: none; box-shadow: none; }
+.canvas-scrolled > viewport { border: none; outline: none; }
+.right-panel-right { border-left: 1px solid @borders; }
+.right-panel-bottom { border-top: 1px solid @borders; }
+.monitor-list row:not(:selected) label { opacity: 0.55; font-size: 0.9em; }
+.monitor-list { margin-bottom: 6px; }
+.entry-field { border-radius: 6px; padding: 5px 8px; }
+"""
+
+
+def get_monitors():
+    result = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True)
+    monitors = json.loads(result.stdout)
+    out = []
+    for m in monitors:
+        out.append({
+            "name": m["name"],
+            "width": m["width"],
+            "height": m["height"],
+            "refresh": round(m["refreshRate"]),
+            "scale": m["scale"],
+            "x": m["x"],
+            "y": m["y"],
+            "transform": m.get("transform", 0),
+        })
+    return out
+
+
+def get_monitor_modes(name):
+    result = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True)
+    monitors = json.loads(result.stdout)
+    for m in monitors:
+        if m["name"] == name:
+            modes = m.get("availableModes", [])
+            cleaned = []
+            for mode in modes:
+                mode = mode.strip()
+                if mode.endswith("Hz"):
+                    mode = mode[:-2].strip()
+                cleaned.append(mode)
+            return cleaned
+    return []
+
+
+def mode_matches(mode_str, width, height, refresh):
+    parts = mode_str.split("@")
+    if len(parts) != 2:
+        return False
+    res = parts[0].strip()
+    hz = parts[1].strip()
+    expected_res = f"{width}x{height}"
+    if res != expected_res:
+        return False
+    try:
+        return abs(float(hz) - refresh) < 1.0
+    except ValueError:
+        return False
+
+
+def mode_to_resolution(mode_str):
+    parts = mode_str.split("@")
+    res = parts[0].strip()
+    hz = float(parts[1].strip()) if len(parts) > 1 else 60
+    w, h = res.split("x")
+    return int(w), int(h), round(hz)
+
+
+def serialize_monitors(monitors):
+    lines = [
+        "# See https://wiki.hypr.land/Configuring/Basics/Monitors/",
+        "# Auto-generado por MyDisplays",
+        "",
+    ]
+    for m in monitors:
+        res = f"{m['width']}x{m['height']}@{m['refresh']}"
+        pos = f"{m['x']}x{m['y']}"
+        scale = m["scale"]
+        transform = m.get("transform", 0)
+        line = f"monitor={m['name']},{res},{pos},{scale}"
+        if transform:
+            line += f",transform,{transform}"
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+def hyprctl_reload():
+    result = subprocess.run(["hyprctl", "reload"], capture_output=True, text=True)
+    err_result = subprocess.run(["hyprctl", "configerrors"], capture_output=True, text=True)
+    errors = err_result.stdout.strip()
+    if result.returncode != 0:
+        return False, result.stderr
+    if errors and errors != "ok":
+        return False, errors
+    return True, ""
+
+
+class MonitorCanvas(Gtk.DrawingArea):
+    def __init__(self):
+        super().__init__()
+        self.set_hexpand(True)
+        self.set_vexpand(True)
+        self.set_draw_func(self.on_draw)
+        self.monitors = []
+        self.dragging = None
+        self._pos_snapshot = {}
+        self.drag_offset_x = 0
+        self.drag_offset_y = 0
+        self.base_scale = 0.12
+        self.scale_factor = self.base_scale
+        self.zoom_percent = 100
+        self.offset_x = 30
+        self.offset_y = 30
+        self.selected_name = None
+        self._anim_name = None
+        self._anim_forward = True
+        self.anim_progress = 0.0
+        self.anim_source = None
+        self._extra_top = 0.0
+        self._extra_top_from = 0.0
+        self._extra_top_to = 0.0
+        self._extra_top_anim = None
+        self._extra_top_start = 0
+        self.overlap_rects = []
+        self.has_overlap = False
+        self.overlap_phase = 0
+        self.overlap_anim_source = None
+        self._text_alpha = 1.0
+        self._text_alpha_from = 1.0
+        self._text_alpha_to = 1.0
+        self._text_alpha_start = 0
+        self._text_alpha_anim = None
+        self.on_zoom_changed = None
+
+        click_gesture = Gtk.GestureClick()
+        click_gesture.connect("pressed", self.on_click_pressed)
+        click_gesture.connect("released", self.on_click_released)
+        self.add_controller(click_gesture)
+
+        motion_controller = Gtk.EventControllerMotion()
+        motion_controller.connect("motion", self.on_motion)
+        self.add_controller(motion_controller)
+
+    def compute_layout(self):
+        if not self.monitors:
+            return
+        sf = self.scale_factor
+        side = 75
+        top = 75 + int(self._extra_top)
+        min_vx = min(m["x"] * sf for m in self.monitors)
+        min_vy = min(m["y"] * sf for m in self.monitors)
+        max_vx = max((m["x"] + m["width"] / m["scale"]) * sf for m in self.monitors)
+        max_vy = max((m["y"] + m["height"] / m["scale"]) * sf for m in self.monitors)
+        cw = int(max_vx - min_vx + 2 * side)
+        ch = int(max_vy - min_vy + side + top)
+        self.set_size_request(max(cw, 100), max(ch, 100))
+        self.offset_x = side - min_vx
+        self.offset_y = top - min_vy
+        self.update_overlaps()
+
+    def set_monitors(self, monitors):
+        self.monitors = monitors
+        self.compute_layout()
+        self.ensure_clear_overlay()
+        self.queue_draw()
+
+    def adjust_zoom(self, delta):
+        if self._extra_top_anim:
+            GLib.source_remove(self._extra_top_anim)
+            self._extra_top_anim = None
+        self._extra_top = 0
+        self._extra_top_to = 0
+        zmax = 300
+        if delta > 0 and self.zoom_percent >= 50 and self._text_alpha < 1.0 and self._text_alpha_to == 1.0:
+            zmax = 50
+        self.zoom_percent = max(20, min(zmax, self.zoom_percent + delta))
+        self.scale_factor = self.base_scale * (self.zoom_percent / 100)
+        self.compute_layout()
+        self.queue_draw()
+        if self.on_zoom_changed:
+            self.on_zoom_changed(self.zoom_percent)
+
+        if self.zoom_percent <= 40:
+            self._start_text_fade(0.0)
+        elif self.zoom_percent >= 50:
+            self._start_text_fade(1.0)
+
+    def select_monitor(self, name):
+        if self.selected_name == name:
+            return
+        self.selected_name = name
+        self._anim_name = name
+        self.start_anim(forward=True)
+        self.queue_draw()
+
+    def deselect_monitor(self):
+        if self.selected_name is None:
+            return
+        self._anim_name = self.selected_name
+        self.selected_name = None
+        self.start_anim(forward=False)
+
+    def start_anim(self, forward=True):
+        if self.anim_source:
+            GLib.source_remove(self.anim_source)
+        self._anim_forward = forward
+        self.anim_progress = 0.0 if forward else 1.0
+        self._anim_start = GLib.get_monotonic_time()
+        self.anim_source = GLib.timeout_add(16, self.tick_anim)
+
+    def tick_anim(self):
+        elapsed_us = GLib.get_monotonic_time() - self._anim_start
+        raw_p = min(1.0, elapsed_us / 500000)
+        if self._anim_forward:
+            self.anim_progress = raw_p
+        else:
+            self.anim_progress = 1.0 - raw_p
+        self.queue_draw()
+        if raw_p >= 1.0:
+            self.anim_source = None
+            return False
+        return True
+
+    def get_monitor_at(self, view_x, view_y):
+        ox = self.offset_x
+        oy = self.offset_y
+        sf = self.scale_factor
+        for m in sorted(self.monitors, key=lambda x: -x["y"]):
+            lw = m["width"] / m["scale"]
+            lh = m["height"] / m["scale"]
+            mx = ox + m["x"] * sf
+            my = oy + m["y"] * sf
+            mw = lw * sf
+            mh = lh * sf
+            if mx <= view_x <= mx + mw and my <= view_y <= my + mh:
+                return m
+        return None
+
+    def on_click_pressed(self, gesture, n_press, vx, vy):
+        m = self.get_monitor_at(vx, vy)
+        if m:
+            self.dragging = m
+            if self._extra_top > 0:
+                self._extra_top = 0
+                self._extra_top_to = 0
+                if self._extra_top_anim:
+                    GLib.source_remove(self._extra_top_anim)
+                    self._extra_top_anim = None
+                self.compute_layout()
+                self.queue_draw()
+            self._pos_snapshot = {mm["name"]: (mm["x"], mm["y"]) for mm in self.monitors}
+            ox = self.offset_x
+            oy = self.offset_y
+            sf = self.scale_factor
+            self.drag_offset_x = vx - (ox + m["x"] * sf)
+            self.drag_offset_y = vy - (oy + m["y"] * sf)
+            self.select_monitor(m["name"])
+            win = self.get_native()
+            if win and hasattr(win, "select_monitor_by_name"):
+                win.select_monitor_by_name(m["name"])
+        else:
+            self.deselect_monitor()
+
+    def ease_in_out(self, t):
+        if t < 0.5:
+            return 2 * t * t
+        return -1 + (4 - 2 * t) * t
+
+    def ensure_clear_overlay(self):
+        win = self.get_native()
+        if not win or not hasattr(win, "scrolled"):
+            return
+        sw = win.scrolled
+        scroll_y = sw.get_vadjustment().get_value()
+        overlay_h = 50
+        sf = self.scale_factor
+        min_y = min(self.offset_y + m["y"] * sf for m in self.monitors)
+        visible_top = min_y - scroll_y
+        if visible_top >= overlay_h:
+            if self._extra_top > 0 or self._extra_top_anim:
+                if self._extra_top_anim:
+                    GLib.source_remove(self._extra_top_anim)
+                self._extra_top_from = self._extra_top
+                self._extra_top_to = 0
+                self._extra_top_start = GLib.get_monotonic_time()
+                self._extra_top_anim = GLib.timeout_add(16, self.tick_extra_top_anim)
+            return
+        visible_top = max(visible_top, -overlay_h)
+        needed = math.ceil((overlay_h - visible_top) / sf) + 8
+        needed_px = needed * sf
+        current = self._extra_top_to if self._extra_top_anim else self._extra_top
+        if abs(needed_px - current) < 0.5:
+            return
+        if self._extra_top_anim:
+            GLib.source_remove(self._extra_top_anim)
+        self._extra_top_from = self._extra_top
+        self._extra_top_to = needed_px
+        self._extra_top_start = GLib.get_monotonic_time()
+        self._extra_top_anim = GLib.timeout_add(16, self.tick_extra_top_anim)
+
+    def tick_extra_top_anim(self):
+        elapsed_us = GLib.get_monotonic_time() - self._extra_top_start
+        p = min(1.0, elapsed_us / 500000)
+        eased = self.ease_in_out(p)
+        self._extra_top = self._extra_top_from + (self._extra_top_to - self._extra_top_from) * eased
+        self.compute_layout()
+        self.queue_draw()
+        if p >= 1.0:
+            self._extra_top = self._extra_top_to
+            self._extra_top_anim = None
+            self.compute_layout()
+            self.queue_draw()
+            win = self.get_native()
+            if win and hasattr(win, "refresh_overlap_warning"):
+                win.refresh_overlap_warning()
+            return False
+        return True
+
+    def _start_text_fade(self, target):
+        if self._text_alpha_to == target:
+            return
+        if self._text_alpha == target:
+            return
+        if self._text_alpha_anim:
+            GLib.source_remove(self._text_alpha_anim)
+        self._text_alpha_from = self._text_alpha
+        self._text_alpha_to = target
+        self._text_alpha_start = GLib.get_monotonic_time()
+        self._text_alpha_anim = GLib.timeout_add(16, self._tick_text_alpha)
+
+    def _tick_text_alpha(self):
+        elapsed_us = GLib.get_monotonic_time() - self._text_alpha_start
+        p = min(1.0, elapsed_us / 500000)
+        eased = self.ease_in_out(p)
+        self._text_alpha = self._text_alpha_from + (self._text_alpha_to - self._text_alpha_from) * eased
+        self.queue_draw()
+        if p >= 1.0:
+            self._text_alpha = self._text_alpha_to
+            self._text_alpha_anim = None
+            self.queue_draw()
+            return False
+        return True
+
+    def on_click_released(self, gesture, n_press, vx, vy):
+        if self.dragging:
+            old = self._pos_snapshot.get(self.dragging["name"])
+            if old and (old[0] != self.dragging["x"] or old[1] != self.dragging["y"]):
+                win = self.get_native()
+                if win and hasattr(win, "on_canvas_drag"):
+                    win.dragging_block = True
+                    win.on_canvas_drag(self.dragging)
+                    win.dragging_block = False
+        self.dragging = None
+        self._pos_snapshot = {}
+        self.ensure_clear_overlay()
+        self.snap_monitors()
+        self.update_overlaps()
+        self.queue_draw()
+        win = self.get_native()
+        if win and hasattr(win, "refresh_overlap_warning"):
+            win.refresh_overlap_warning()
+
+
+    def on_motion(self, controller, vx, vy):
+        if self.dragging:
+            ox = self.offset_x
+            oy = self.offset_y
+            sf = self.scale_factor
+            new_x = (vx - ox - self.drag_offset_x) / sf
+            new_y = (vy - oy - self.drag_offset_y) / sf
+            win = self.get_native()
+            freeze_y = win and hasattr(win, "scrolled") and vy - win.scrolled.get_vadjustment().get_value() <= 50
+            target_y = self.dragging["y"] if freeze_y else new_y
+            clamped_x, clamped_y = self.clamp_position(self.dragging, new_x, target_y)
+            clamped_x, clamped_y = self.clamp_max_distance(self.dragging, clamped_x, clamped_y)
+            self.dragging["x"] = round(clamped_x)
+            self.dragging["y"] = round(clamped_y)
+            self.queue_draw()
+
+    def clamp_position(self, m, new_x, new_y):
+        return geom.clamp_position(self.monitors, m, new_x, new_y)
+
+    def snap_monitors(self):
+        if geom.snap_monitors(self.monitors):
+            self.compute_layout()
+            self.queue_draw()
+            win = self.get_native()
+            if win and hasattr(win, "refresh_overlap_warning"):
+                win.refresh_overlap_warning()
+
+    MAX_DIST = 10000
+
+    def clamp_max_distance(self, m, new_x, new_y):
+        m_w = m["width"] / m["scale"]
+        m_h = m["height"] / m["scale"]
+        m_cx = new_x + m_w / 2
+        m_cy = new_y + m_h / 2
+        for other in self.monitors:
+            if other is m:
+                continue
+            o_w = other["width"] / other["scale"]
+            o_h = other["height"] / other["scale"]
+            o_cx = other["x"] + o_w / 2
+            o_cy = other["y"] + o_h / 2
+            dx = m_cx - o_cx
+            dy = m_cy - o_cy
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist > self.MAX_DIST:
+                scale = self.MAX_DIST / dist
+                new_cx = o_cx + dx * scale
+                new_cy = o_cy + dy * scale
+                return new_cx - m_w / 2, new_cy - m_h / 2
+        return new_x, new_y
+
+    def update_overlaps(self):
+        self.overlap_rects = []
+        for i, a in enumerate(self.monitors):
+            for b in self.monitors[i + 1:]:
+                a_h = a["height"] / a["scale"]
+                a_w = a["width"] / a["scale"]
+                b_h = b["height"] / b["scale"]
+                b_w = b["width"] / b["scale"]
+                ix = max(a["x"], b["x"])
+                iy = max(a["y"], b["y"])
+                ir = min(a["x"] + a_w, b["x"] + b_w)
+                ib = min(a["y"] + a_h, b["y"] + b_h)
+                if ix < ir and iy < ib:
+                    self.overlap_rects.append((ix, iy, ir - ix, ib - iy))
+        self.has_overlap = len(self.overlap_rects) > 0
+        if self.has_overlap:
+            if self.overlap_anim_source is None:
+                self.overlap_anim_source = GLib.timeout_add(50, self.advance_overlap_anim)
+        else:
+            if self.overlap_anim_source is not None:
+                GLib.source_remove(self.overlap_anim_source)
+                self.overlap_anim_source = None
+            self.overlap_phase = 0
+
+    def advance_overlap_anim(self):
+        if not self.has_overlap:
+            self.overlap_anim_source = None
+            return False
+        self.overlap_phase = (self.overlap_phase + 1) % 20
+        self.queue_draw()
+        return True
+
+    def on_draw(self, area, cr, w, h):
+        cr.set_source_rgb(0.07, 0.07, 0.09)
+        cr.paint()
+
+        if not self.monitors:
+            cr.set_source_rgb(0.5, 0.5, 0.5)
+            cr.set_font_size(14)
+            cr.move_to(20, 30)
+            cr.show_text(_("No hay monitores"))
+            return
+
+        ox = self.offset_x
+        oy = self.offset_y
+        sf = self.scale_factor
+
+        for m in self.monitors:
+            lw = m["width"] / m["scale"]
+            lh = m["height"] / m["scale"]
+            mw = max(lw * sf, 20)
+            mh = max(lh * sf, 20)
+            mx = ox + m["x"] * sf
+            my = oy + m["y"] * sf
+
+            if m["name"] == self.selected_name:
+                cr.set_source_rgb(0.4, 0.6, 0.9)
+            else:
+                cr.set_source_rgb(0.15, 0.22, 0.38)
+            r = 3
+            cr.new_sub_path()
+            cr.arc(mx + r, my + r, r, math.pi, 3 * math.pi / 2)
+            cr.arc(mx + mw - r, my + r, r, 3 * math.pi / 2, 2 * math.pi)
+            cr.arc(mx + mw - r, my + mh - r, r, 0, math.pi / 2)
+            cr.arc(mx + r, my + mh - r, r, math.pi / 2, math.pi)
+            cr.close_path()
+            cr.fill()
+
+            if mw > 40 and mh > 30:
+                ta = self._text_alpha
+                if ta < 0.01:
+                    continue
+                p = self.anim_progress
+                is_anim = m["name"] == self._anim_name
+
+                name_size = max(7, min(18, int(mw / 10)))
+                if is_anim:
+                    name_size += int(p * 4)
+                    y_off = p * 6
+                    sub_alpha = min(1.0 - p, ta)
+                else:
+                    y_off = 0
+                    sub_alpha = ta
+
+                cr.select_font_face("Sans", 0, 1)
+                cr.set_font_size(name_size)
+                cr.set_source_rgba(0.8, 0.85, 0.95, ta)
+                te = cr.text_extents(m["name"])
+                tx = mx + (mw - te.width) / 2
+                ty = my + (mh - te.height) / 2 - 6 + y_off
+                cr.move_to(tx, ty)
+                cr.show_text(m["name"])
+
+                if sub_alpha > 0.01:
+                    sub_size = max(6, min(11, int(mw / 16)))
+                    cr.select_font_face("Sans", 0, 0)
+                    cr.set_font_size(sub_size)
+                    cr.set_source_rgba(0.6, 0.65, 0.75, sub_alpha)
+                    sub = _("Seleccionar para editar")
+                    te = cr.text_extents(sub)
+                    tx = mx + (mw - te.width) / 2
+                    ty = my + (mh - te.height) / 2 + 14
+                    cr.move_to(tx, ty)
+                    cr.show_text(sub)
+
+        if self.has_overlap:
+            alpha = self.overlap_phase / 20.0
+            cr.set_source_rgba(0.9, 0.1, 0.1, alpha * 0.5)
+            for rx, ry, rw, rh in self.overlap_rects:
+                cr.rectangle(ox + rx * sf, oy + ry * sf, rw * sf, rh * sf)
+                cr.fill()
+
+
+class MyDisplaysWindow(Adw.ApplicationWindow):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.set_title(_("MyDisplays"))
+        self.set_default_size(1000, 650)
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
+        self.setup_logging()
+        self.setup_css()
+        self.setup_ui()
+        self.current_monitor = None
+        self.dragging_block = False
+        self._editing_block = False
+        self._dirty = False
+        self._saved_state = []
+        self._is_portrait = False
+        self.refresh_monitors()
+        self._saved_state = copy.deepcopy(self.monitors)
+
+        kc = Gtk.EventControllerKey()
+        kc.connect("key-pressed", self.on_key_pressed)
+        self.add_controller(kc)
+
+    def setup_css(self):
+        provider = Gtk.CssProvider()
+        provider.load_from_string(CSS_EXTRA)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+
+    def setup_logging(self):
+        os.makedirs(PROFILES_DIR, exist_ok=True)
+        logging.basicConfig(
+            filename=LOG_FILE,
+            level=logging.INFO,
+            format="%(asctime)s | %(levelname)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        logging.info(_("MyDisplays iniciado"))
+
+    def setup_ui(self):
+        toast_overlay = Adw.ToastOverlay()
+        self.set_content(toast_overlay)
+        self.toast_overlay = toast_overlay
+
+        toolbar_view = Adw.ToolbarView()
+        toast_overlay.set_child(toolbar_view)
+
+        header = Adw.HeaderBar()
+        toolbar_view.add_top_bar(header)
+
+        # 2 — hamburger menu (help, about, logs)
+        menu_popover = Gtk.Popover()
+        menu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+
+        help_btn = Gtk.Button(label=_("Ayuda"))
+        help_btn.connect("clicked", lambda b: (menu_popover.popdown(), self.on_help()))
+        help_btn.add_css_class("flat")
+        help_btn.set_size_request(180, 34)
+        menu_box.append(help_btn)
+
+        about_btn = Gtk.Button(label=_("Acerca de"))
+        about_btn.connect("clicked", lambda b: (menu_popover.popdown(), self.on_about()))
+        about_btn.add_css_class("flat")
+        about_btn.set_size_request(180, 34)
+        menu_box.append(about_btn)
+
+        logs_btn = Gtk.Button(label=_("Ver logs"))
+        logs_btn.connect("clicked", lambda b: (menu_popover.popdown(), self.on_view_logs()))
+        logs_btn.add_css_class("flat")
+        logs_btn.set_size_request(180, 34)
+        menu_box.append(logs_btn)
+
+        menu_popover.set_child(menu_box)
+        hamburger = Gtk.MenuButton()
+        hamburger.set_icon_name("open-menu-symbolic")
+        hamburger.set_popover(menu_popover)
+        hamburger.set_tooltip_text(_("Menú"))
+        header.pack_end(hamburger)
+
+        main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        main_box.set_homogeneous(True)
+        self.main_layout_box = main_box
+        toolbar_view.set_content(main_box)
+
+        # Left area: overlay (fixed controls on top of scrolled canvas)
+        left_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        left_area.set_hexpand(True)
+        left_area.set_vexpand(True)
+        self.left_area = left_area
+        main_box.append(left_area)
+
+        overlay = Gtk.Overlay()
+        overlay.set_hexpand(True)
+        overlay.set_vexpand(True)
+        left_area.append(overlay)
+
+        # Scrolled canvas (main child)
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_hexpand(True)
+        scrolled.set_vexpand(True)
+        scrolled.set_has_frame(False)
+        scrolled.set_propagate_natural_width(True)
+        scrolled.set_propagate_natural_height(True)
+        scrolled.add_css_class("canvas-scrolled")
+        self.scrolled = scrolled
+        overlay.set_child(scrolled)
+
+        self.canvas = MonitorCanvas()
+        self.canvas.on_zoom_changed = self.on_zoom_percent_changed
+        scrolled.set_child(self.canvas)
+
+        # Overlay controls (fixed, no scroll)
+        top_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        top_box.set_halign(Gtk.Align.CENTER)
+        top_box.set_valign(Gtk.Align.START)
+        top_box.set_margin_top(4)
+
+        legend = Gtk.Label(label=_("Arrastra monitores para cambiar posición"))
+        legend.add_css_class("dim-label")
+        top_box.append(legend)
+
+        zoom_toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        zoom_toolbar.set_halign(Gtk.Align.CENTER)
+        zoom_toolbar.set_margin_top(1)
+
+        zoom_out = Gtk.Button(label="−")
+        zoom_out.set_size_request(18, 18)
+        zoom_out.set_tooltip_text(_("Alejar (Ctrl+-)"))
+        zoom_out.connect("clicked", lambda btn: self.adjust_zoom(-10))
+        zoom_toolbar.append(zoom_out)
+
+        self.zoom_label = Gtk.Label(label="100%")
+        self.zoom_label.set_margin_start(2)
+        self.zoom_label.set_margin_end(2)
+        zoom_toolbar.append(self.zoom_label)
+
+        zoom_in = Gtk.Button(label="+")
+        zoom_in.set_size_request(18, 18)
+        zoom_in.set_tooltip_text(_("Acercar (Ctrl++)"))
+        zoom_in.connect("clicked", lambda btn: self.adjust_zoom(10))
+        zoom_toolbar.append(zoom_in)
+
+        top_box.append(zoom_toolbar)
+        overlay.add_overlay(top_box)
+
+        right_scroll = Gtk.ScrolledWindow()
+        right_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        right_scroll.set_has_frame(False)
+        right_scroll.set_vexpand(True)
+        right_scroll.add_css_class("canvas-scrolled")
+        right_scroll.add_css_class("right-panel-right")
+        self.right_scroll = right_scroll
+        main_box.append(right_scroll)
+
+        right_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        right_panel.set_hexpand(True)
+        right_panel.set_halign(Gtk.Align.FILL)
+        right_panel.set_margin_start(12)
+        right_panel.set_margin_end(12)
+        right_panel.set_margin_top(12)
+        right_panel.set_margin_bottom(28)
+        right_scroll.set_child(right_panel)
+
+        # 1 — no title, just the monitor list
+        selector_group = Adw.PreferencesGroup()
+        right_panel.append(selector_group)
+
+        self.monitor_list = Gtk.ListBox()
+        self.monitor_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.monitor_list.add_css_class("monitor-list")
+        self.monitor_list.connect("row-selected", self.on_monitor_selected)
+        selector_group.add(self.monitor_list)
+
+        # 4 — "Editar" instead of "Editar monitor"
+        edit_group = Adw.PreferencesGroup()
+        edit_group.set_title(_("Editar"))
+        right_panel.append(edit_group)
+
+        res_row = Adw.ActionRow(title=_("Resolución"))
+        self.res_combo = Gtk.DropDown()
+        self.res_combo.connect("notify::selected", self.on_resolution_changed)
+        res_row.add_suffix(self.res_combo)
+        edit_group.add(res_row)
+
+        scale_row = Adw.ActionRow(title=_("Escala"))
+        self.scale_entry = Gtk.Entry()
+        self.scale_entry.set_width_chars(5)
+        self.scale_entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        self.scale_entry.add_css_class("entry-field")
+        self.scale_entry.connect("changed", self.on_edit_changed)
+        scale_row.add_suffix(self.scale_entry)
+        edit_group.add(scale_row)
+
+        posx_row = Adw.ActionRow(title=_("Posición X"))
+        self.posx_entry = Gtk.Entry()
+        self.posx_entry.set_width_chars(5)
+        self.posx_entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        self.posx_entry.add_css_class("entry-field")
+        self.posx_entry.connect("changed", self.on_edit_changed)
+        posx_row.add_suffix(self.posx_entry)
+        edit_group.add(posx_row)
+
+        posy_row = Adw.ActionRow(title=_("Posición Y"))
+        self.posy_entry = Gtk.Entry()
+        self.posy_entry.set_width_chars(5)
+        self.posy_entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        self.posy_entry.add_css_class("entry-field")
+        self.posy_entry.connect("changed", self.on_edit_changed)
+        posy_row.add_suffix(self.posy_entry)
+        edit_group.add(posy_row)
+
+        rot_row = Adw.ActionRow(title=_("Rotación"))
+        self.rot_options = [(_("0°"), 0), (_("90°"), 1), (_("180°"), 2), (_("270°"), 3)]
+        rot_model = Gtk.StringList.new([l for l, _ in self.rot_options])
+        self.rot_combo = Gtk.DropDown(model=rot_model)
+        self.rot_combo.connect("notify::selected", self.on_rotation_changed)
+        rot_row.add_suffix(self.rot_combo)
+        edit_group.add(rot_row)
+
+        mirror_row = Adw.ActionRow(title=_("Espejo H"))
+        self.mirror_switch = Gtk.Switch()
+        self.mirror_switch.set_valign(Gtk.Align.CENTER)
+        self.mirror_switch.connect("notify::active", self.on_mirror_toggled)
+        mirror_row.add_suffix(self.mirror_switch)
+        edit_group.add(mirror_row)
+
+        btn_group = Adw.PreferencesGroup()
+        btn_group.set_margin_top(10)
+        right_panel.append(btn_group)
+
+        save_btn = Gtk.Button(label=_("Guardar"))
+        save_btn.add_css_class("dim-label")
+        save_btn.connect("clicked", self.on_save)
+        self.save_btn = save_btn
+        btn_group.add(save_btn)
+
+        cancel_btn = Gtk.Button(label=_("Cancelar"))
+        cancel_btn.set_margin_top(6)
+        cancel_btn.add_css_class("dim-label")
+        cancel_btn.connect("clicked", self.on_cancel)
+        self.cancel_btn = cancel_btn
+        btn_group.add(cancel_btn)
+
+        save_profile_btn = Gtk.Button(label=_("Guardar perfil"))
+        save_profile_btn.set_margin_top(6)
+        save_profile_btn.connect("clicked", self.on_save_profile)
+        btn_group.add(save_profile_btn)
+
+        self.load_profile_btn = Gtk.Button(label=_("Cargar perfil"))
+        self.load_profile_btn.set_margin_top(6)
+        self.load_profile_btn.connect("clicked", self.on_load_profile)
+        self.load_profile_btn.set_visible(False)
+        btn_group.add(self.load_profile_btn)
+
+        identify_group = Adw.PreferencesGroup()
+        identify_group.set_margin_top(6)
+        right_panel.append(identify_group)
+
+        self.identify_btn = Gtk.Button(label=_("Identificar Displays"))
+        self.identify_btn.connect("clicked", self.identify_displays)
+        self.identify_btn.set_visible(False)
+        identify_group.add(self.identify_btn)
+
+        warp_group = Adw.PreferencesGroup()
+        warp_group.set_margin_top(6)
+        right_panel.append(warp_group)
+
+        self.warp_row = Gtk.ListBoxRow()
+        self.warp_row.set_activatable(False)
+        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        hbox.set_margin_start(12)
+        hbox.set_margin_end(12)
+        label = Gtk.Label(label=_("Easy Pointer"))
+        label.set_xalign(0)
+        label.set_hexpand(True)
+        hbox.append(label)
+        self.warp_switch = Gtk.Switch()
+        self.warp_switch.set_valign(Gtk.Align.CENTER)
+        self.warp_switch.connect("notify::active", self.on_toggle_warp)
+        hbox.append(self.warp_switch)
+        self.warp_row.set_child(hbox)
+        self.warp_row.set_tooltip_text(_("Salta el cursor entre monitores al tocar bordes contiguos"))
+        warp_group.add(self.warp_row)
+        self.load_warp_state()
+
+    def mark_dirty(self):
+        if not self._dirty:
+            self._dirty = True
+            self.save_btn.add_css_class("suggested-action")
+            self.save_btn.remove_css_class("dim-label")
+            self.cancel_btn.remove_css_class("dim-label")
+
+    def clear_dirty(self):
+        self._dirty = False
+        self._saved_state = copy.deepcopy(self.monitors)
+        self.save_btn.remove_css_class("suggested-action")
+        self.save_btn.add_css_class("dim-label")
+        self.cancel_btn.add_css_class("dim-label")
+
+    def on_cancel(self, *args):
+        if not self._dirty:
+            return
+        for m in self.monitors:
+            saved = self._saved_state[0] if self._saved_state else None
+            for s in self._saved_state:
+                if s["name"] == m["name"]:
+                    saved = s
+                    break
+            if saved:
+                m.update(copy.deepcopy(saved))
+        self.canvas.set_monitors(self.monitors)
+        if self.current_monitor:
+            for s in self._saved_state:
+                if s["name"] == self.current_monitor["name"]:
+                    self.current_monitor.update(copy.deepcopy(s))
+                    break
+            self._editing_block = True
+            self.scale_entry.set_text(str(self.current_monitor["scale"]))
+            self.posx_entry.set_text(str(self.current_monitor["x"]))
+            self.posy_entry.set_text(str(self.current_monitor["y"]))
+            self._editing_block = False
+        self.clear_dirty()
+        self.canvas.queue_draw()
+
+    def identify_displays(self, *args):
+        for m in self.monitors:
+            name = m["name"]
+            mon_w = int(m["width"] / m["scale"])
+            mon_h = int(m["height"] / m["scale"])
+            subprocess.Popen([
+                "hyprctl", "dispatch", "exec",
+                f"[monitor {name}] {SCRIPT_PATH} --identify {name} {mon_w} {mon_h}"
+            ])
+
+    def on_zoom_percent_changed(self, pct):
+        self.zoom_label.set_text(f"{pct}%")
+
+    def on_key_pressed(self, controller, keyval, keycode, state):
+        ctrl = (state & Gdk.ModifierType.CONTROL_MASK) != 0
+        if not ctrl:
+            return Gdk.EVENT_PROPAGATE
+        if keyval in (Gdk.KEY_KP_Add, Gdk.KEY_plus, Gdk.KEY_equal):
+            self.adjust_zoom(10)
+            return Gdk.EVENT_STOP
+        if keyval in (Gdk.KEY_KP_Subtract, Gdk.KEY_minus):
+            self.adjust_zoom(-10)
+            return Gdk.EVENT_STOP
+        return Gdk.EVENT_PROPAGATE
+
+    def adjust_zoom(self, delta):
+        canvas = self.canvas
+        canvas.adjust_zoom(delta)
+        mon = canvas.monitors
+        if mon:
+            lx_min = min(m["x"] for m in mon)
+            lx_max = max(m["x"] + m["width"] / m["scale"] for m in mon)
+            ly_min = min(m["y"] for m in mon)
+            ly_max = max(m["y"] + m["height"] / m["scale"] for m in mon)
+            sf = canvas.scale_factor
+            self._zoom_target_w = (lx_max - lx_min) * sf + 150
+            self._zoom_target_h = (ly_max - ly_min) * sf + 150
+        GLib.idle_add(self._center_on_idle)
+
+    def _center_on_idle(self):
+        if not hasattr(self, '_zoom_target_w'):
+            return False
+        sw = self.scrolled
+        hadj = sw.get_hadjustment()
+        vadj = sw.get_vadjustment()
+        vpw = hadj.get_page_size()
+        vph = vadj.get_page_size()
+        if vpw <= 0 or vph <= 0:
+            return True
+        if hadj.get_upper() < self._zoom_target_w - 0.5:
+            return True
+        hadj.set_value(max(0, (hadj.get_upper() - vpw) / 2))
+        vadj.set_value(max(0, (vadj.get_upper() - vph) / 2))
+        return False
+
+    def center_canvas(self):
+        sw = self.scrolled
+        hadj = sw.get_hadjustment()
+        vadj = sw.get_vadjustment()
+        hadj.set_value(max(0, (hadj.get_upper() - hadj.get_page_size()) / 2))
+        vadj.set_value(max(0, (vadj.get_upper() - vadj.get_page_size()) / 2))
+        return False
+
+    _last_warp_width = 0
+
+    def do_size_allocate(self, width, height, baseline):
+        Adw.ApplicationWindow.do_size_allocate(self, width, height, baseline)
+        if hasattr(self, 'warp_group') and hasattr(self, 'btn_group'):
+            bw = self.btn_group.get_allocated_width()
+            if bw > 0 and bw != self._last_warp_width:
+                self._last_warp_width = bw
+                self.warp_group.set_size_request(bw, -1)
+        is_portrait = height > width
+        if is_portrait == getattr(self, '_is_portrait', False):
+            return
+        self._is_portrait = is_portrait
+        if is_portrait:
+            self.main_layout_box.set_orientation(Gtk.Orientation.VERTICAL)
+            self.right_scroll.remove_css_class("right-panel-right")
+            self.right_scroll.add_css_class("right-panel-bottom")
+            self.right_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        else:
+            self.main_layout_box.set_orientation(Gtk.Orientation.HORIZONTAL)
+            self.right_scroll.remove_css_class("right-panel-bottom")
+            self.right_scroll.add_css_class("right-panel-right")
+            self.right_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        GLib.idle_add(self.canvas.ensure_clear_overlay)
+        GLib.idle_add(self.center_canvas)
+
+    def select_monitor_by_name(self, name):
+        row = self.monitor_list.get_first_child()
+        while row:
+            if row.monitor["name"] == name:
+                self.monitor_list.select_row(row)
+                return
+            row = row.get_next_sibling()
+
+    def on_canvas_drag(self, monitor):
+        self.mark_dirty()
+        if self.current_monitor and self.current_monitor["name"] == monitor["name"]:
+            self.posx_entry.set_text(str(monitor["x"]))
+            self.posy_entry.set_text(str(monitor["y"]))
+
+    def refresh_monitors(self):
+        prev_name = self.current_monitor["name"] if self.current_monitor else None
+        self.monitors = get_monitors()
+        self.canvas.set_monitors(self.monitors)
+        while True:
+            row = self.monitor_list.get_first_child()
+            if not row:
+                break
+            self.monitor_list.remove(row)
+        for m in self.monitors:
+            lbl = Gtk.Label(label=f"{m['name']}  {m['width']}x{m['height']}")
+            lbl.set_xalign(0)
+            row = Gtk.ListBoxRow()
+            row.set_child(lbl)
+            row.monitor = m
+            self.monitor_list.append(row)
+        self.refresh_overlap_warning()
+        self.refresh_profiles()
+        self.identify_btn.set_visible(len(self.monitors) > 1)
+        if prev_name:
+            self.select_monitor_by_name(prev_name)
+        GLib.idle_add(self.center_canvas)
+
+    def refresh_overlap_warning(self):
+        if self.canvas.has_overlap:
+            self.save_btn.set_tooltip_text(_("La configuración se guardará con errores"))
+            self.save_btn.add_css_class("destructive-action")
+        else:
+            self.save_btn.set_tooltip_text("")
+            self.save_btn.remove_css_class("destructive-action")
+
+    def refresh_profiles(self):
+        if not os.path.isdir(PROFILES_DIR):
+            self.load_profile_btn.set_visible(False)
+            return
+        has = any(f.endswith(".conf") for f in os.listdir(PROFILES_DIR))
+        self.load_profile_btn.set_visible(has)
+
+    def on_load_profile(self, *args):
+        self.sync_combo_to_monitor()
+        profiles = []
+        if os.path.isdir(PROFILES_DIR):
+            for f in sorted(os.listdir(PROFILES_DIR)):
+                if f.endswith(".conf"):
+                    profiles.append(f)
+        if not profiles:
+            return
+        dialog = Adw.MessageDialog.new(self, _("Cargar perfil"), _("Selecciona un perfil:"))
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        listbox = Gtk.ListBox()
+        listbox.add_css_class("monitor-list")
+        for f in profiles:
+            name = f.replace(".conf", "")
+            row = Gtk.ListBoxRow()
+            row.filename = f
+            hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+            lbl = Gtk.Label(label=name)
+            lbl.set_xalign(0)
+            lbl.set_hexpand(True)
+            lbl.set_margin_start(8)
+            lbl.set_margin_top(6)
+            lbl.set_margin_bottom(6)
+            hbox.append(lbl)
+            del_btn = Gtk.Button(label="✕")
+            del_btn.set_tooltip_text(_("Eliminar '{}'").format(name))
+            del_btn.add_css_class("flat")
+            del_btn.add_css_class("circular")
+            del_btn.set_size_request(32, 32)
+            del_btn.set_margin_end(4)
+            del_btn.connect("clicked", lambda btn, ff=f, d=dialog: self._delete_profile(ff, d))
+            hbox.append(del_btn)
+            row.set_child(hbox)
+            listbox.append(row)
+        box.append(listbox)
+        dialog.set_extra_child(box)
+        dialog.add_response("cancel", _("Cancelar"))
+        dialog.add_response("apply", _("Aplicar"))
+        dialog.set_default_response("apply")
+        dialog.set_response_appearance("apply", Adw.ResponseAppearance.SUGGESTED)
+        first_row = listbox.get_first_child()
+        if first_row:
+            listbox.select_row(first_row)
+        selected = [profiles[0]]
+
+        def on_row_selected(lb, row):
+            if row:
+                selected[0] = row.filename
+
+        listbox.connect("row-selected", on_row_selected)
+
+        def on_response(d, resp):
+            if resp == "apply":
+                self.on_apply_profile(None, selected[0])
+            d.close()
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
+    def _delete_profile(self, filename, dialog):
+        path = os.path.join(PROFILES_DIR, filename)
+        if os.path.exists(path):
+            os.remove(path)
+            logging.info(_("Perfil eliminado: {}").format(filename))
+            self.toast_overlay.add_toast(Adw.Toast(title=_("Perfil eliminado")))
+        dialog.close()
+        self.refresh_profiles()
+        remaining = []
+        if os.path.isdir(PROFILES_DIR):
+            for f in sorted(os.listdir(PROFILES_DIR)):
+                if f.endswith(".conf"):
+                    remaining.append(f)
+        if remaining:
+            self.on_load_profile()
+
+    def on_monitor_selected(self, listbox, row):
+        if not row:
+            return
+        self._editing_block = True
+        m = row.monitor
+        self.current_monitor = m
+        self.canvas.select_monitor(m["name"])
+        modes = get_monitor_modes(m["name"])
+        str_list = Gtk.StringList.new(modes)
+        self.res_combo.set_model(str_list)
+        for i, mode in enumerate(modes):
+            if mode_matches(mode, m["width"], m["height"], m["refresh"]):
+                self.res_combo.set_selected(i)
+                break
+        self.scale_entry.set_text(str(m["scale"]))
+        self.posx_entry.set_text(str(m["x"]))
+        self.posy_entry.set_text(str(m["y"]))
+        m_transform = m.get("transform", 0)
+        base_rot = m_transform % 4
+        mirrored = m_transform >= 4
+        for ri, (_, rv) in enumerate(self.rot_options):
+            if rv == base_rot:
+                self.rot_combo.set_selected(ri)
+                break
+        self.mirror_switch.set_active(mirrored)
+        self._editing_block = False
+
+    def on_resolution_changed(self, combo, *args):
+        if getattr(self, "_editing_block", False):
+            return
+        if not self.current_monitor:
+            return
+        m = self.current_monitor
+        model = combo.get_model()
+        if not model:
+            return
+        pos = combo.get_selected()
+        if pos == Gtk.INVALID_LIST_POSITION:
+            return
+        mode = model.get_string(pos)
+        w, h, hz = mode_to_resolution(mode)
+        if self.would_overlap_size(m, w, h):
+            for i, mode_str in enumerate(model):
+                if mode_matches(mode_str, m["width"], m["height"], m["refresh"]):
+                    self._editing_block = True
+                    combo.set_selected(i)
+                    self._editing_block = False
+                    return
+            self._editing_block = True
+            combo.set_selected(Gtk.INVALID_LIST_POSITION)
+            self._editing_block = False
+        self.mark_dirty()
+
+    def on_rotation_changed(self, combo, *args):
+        if getattr(self, "_editing_block", False):
+            return
+        if not self.current_monitor:
+            return
+        self.mark_dirty()
+
+    def on_mirror_toggled(self, switch, *args):
+        if getattr(self, "_editing_block", False):
+            return
+        if not self.current_monitor:
+            return
+        self.mark_dirty()
+
+    def would_overlap_size(self, m, new_w, new_h):
+        m_w = new_w / m["scale"]
+        m_h = new_h / m["scale"]
+        for other in self.monitors:
+            if other is m:
+                continue
+            o_h = other["height"] / other["scale"]
+            o_w = other["width"] / other["scale"]
+            if (m["x"] < other["x"] + o_w and m["x"] + m_w > other["x"]
+                    and m["y"] < other["y"] + o_h and m["y"] + m_h > other["y"]):
+                return True
+        return False
+
+    def on_edit_changed(self, entry, *args):
+        if getattr(self, "dragging_block", False):
+            return
+        if getattr(self, "_editing_block", False):
+            return
+        if not self.current_monitor:
+            return
+        m = self.current_monitor
+        new_scale = m["scale"]
+        new_x = m["x"]
+        new_y = m["y"]
+        try:
+            new_scale = float(self.scale_entry.get_text())
+        except ValueError:
+            pass
+        try:
+            new_x = int(self.posx_entry.get_text())
+        except ValueError:
+            pass
+        try:
+            new_y = int(self.posy_entry.get_text())
+        except ValueError:
+            pass
+        if self.would_overlap(m, new_x, new_y, new_scale):
+            self._editing_block = True
+            if entry is self.scale_entry:
+                self.scale_entry.set_text(str(m["scale"]))
+            elif entry is self.posx_entry:
+                self.posx_entry.set_text(str(m["x"]))
+            elif entry is self.posy_entry:
+                self.posy_entry.set_text(str(m["y"]))
+            self._editing_block = False
+            return
+        m["scale"] = new_scale
+        m["x"] = new_x
+        m["y"] = new_y
+        self.canvas.queue_draw()
+        self.canvas.snap_monitors()
+        self.mark_dirty()
+
+    def would_overlap(self, m, new_x, new_y, new_scale):
+        m_h = m["height"] / new_scale
+        m_w = m["width"] / new_scale
+        for other in self.monitors:
+            if other is m:
+                continue
+            o_h = other["height"] / other["scale"]
+            o_w = other["width"] / other["scale"]
+            if (new_x < other["x"] + o_w and new_x + m_w > other["x"]
+                    and new_y < other["y"] + o_h and new_y + m_h > other["y"]):
+                return True
+        return False
+
+    def on_save(self, *args):
+        if not self._dirty:
+            return
+        self.sync_combo_to_monitor()
+        if os.path.exists(MONITOR_CONF):
+            shutil.copy2(MONITOR_CONF, PRECONF)
+        save_monitors_config(self.monitors)
+        ok, output = hyprctl_reload()
+        if not ok:
+            if os.path.exists(PRECONF):
+                shutil.copy2(PRECONF, MONITOR_CONF)
+                hyprctl_reload()
+            show_dialog(self, _("Error al aplicar configuración"), output)
+            logging.error(_("Error al guardar: {}").format(output))
+            self.refresh_monitors()
+            return
+
+        logging.info(_("Config guardada en monitors.conf | reload OK"))
+
+        dialog = Adw.MessageDialog.new(
+            self,
+            _("¿Funciona correctamente?"),
+            _("Se revertirá en 10 segundos si no confirmas."),
+        )
+        dialog.add_response("no", _("Revertir"))
+        dialog.add_response("yes", _("Sí, mantener"))
+        dialog.set_default_response("yes")
+        dialog.set_response_appearance("yes", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_response_appearance("no", Adw.ResponseAppearance.DESTRUCTIVE)
+
+        timeout_id = [None]
+        expired = [False]
+        remaining = [10]
+
+        label = Gtk.Label(label="10")
+        label.set_margin_top(8)
+        dialog.set_extra_child(label)
+
+        tick_cb = [None]
+
+        def on_tick():
+            remaining[0] -= 1
+            label.set_text(str(remaining[0]))
+            if remaining[0] <= 0:
+                expired[0] = True
+                self.restore_and_log_save()
+                dialog.close()
+                return False
+            return True
+
+        tick_cb[0] = GLib.timeout_add(1000, on_tick)
+
+        def on_response(d, resp):
+            if tick_cb[0]:
+                GLib.source_remove(tick_cb[0])
+                tick_cb[0] = None
+            if expired[0]:
+                return
+            if resp == "yes":
+                if os.path.exists(PRECONF):
+                    os.remove(PRECONF)
+                self.clear_dirty()
+                self.toast_overlay.add_toast(Adw.Toast(title=_("Configuración guardada")))
+                self.refresh_monitors()
+            else:
+                self.restore_and_log_save()
+            d.close()
+
+        def on_close():
+            if tick_cb[0]:
+                GLib.source_remove(tick_cb[0])
+                tick_cb[0] = None
+            if not expired[0]:
+                self.restore_and_log_save()
+
+        dialog.connect("response", on_response)
+        dialog.connect("close-request", on_close)
+        dialog.present()
+
+    def restore_and_log_save(self):
+        if os.path.exists(PRECONF):
+            shutil.copy2(PRECONF, MONITOR_CONF)
+            hyprctl_reload()
+            os.remove(PRECONF)
+            self.toast_overlay.add_toast(Adw.Toast(title=_("Cambios revertidos")))
+            logging.info(_("Save revertido"))
+        self.refresh_monitors()
+        self.canvas.queue_draw()
+
+    def sync_combo_to_monitor(self):
+        if not self.current_monitor:
+            return
+        model = self.res_combo.get_model()
+        if model:
+            pos = self.res_combo.get_selected()
+            if pos != Gtk.INVALID_LIST_POSITION:
+                mode = model.get_string(pos)
+                w, h, hz = mode_to_resolution(mode)
+                self.current_monitor["width"] = w
+                self.current_monitor["height"] = h
+                self.current_monitor["refresh"] = hz
+        rp = self.rot_combo.get_selected()
+        base_rot = 0
+        if rp != Gtk.INVALID_LIST_POSITION:
+            base_rot = self.rot_options[rp][1]
+        mirrored = self.mirror_switch.get_active()
+        self.current_monitor["transform"] = base_rot + (4 if mirrored else 0)
+
+    def on_save_profile(self, *args):
+        self.sync_combo_to_monitor()
+        dialog = Adw.MessageDialog.new(self, _("Guardar perfil"), _("Escribe un nombre para este perfil:"))
+        entry = Gtk.Entry()
+        entry.set_placeholder_text(_("Ej: HDMI rotado"))
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", _("Cancelar"))
+        dialog.add_response("save", _("Guardar"))
+        dialog.set_default_response("save")
+        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+
+        def on_response(d, resp):
+            if resp == "save":
+                name = entry.get_text().strip()
+                if name:
+                    os.makedirs(PROFILES_DIR, exist_ok=True)
+                    path = os.path.join(PROFILES_DIR, f"{name}.conf")
+                    with open(path, "w") as f:
+                        f.write(serialize_monitors(self.monitors))
+                self.toast_overlay.add_toast(Adw.Toast(title=_("Perfil '{}' guardado").format(name)))
+                logging.info(_("Perfil guardado: {}").format(name))
+                self.refresh_profiles()
+            d.close()
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
+    def on_apply_profile(self, btn, filename):
+        self.sync_combo_to_monitor()
+        profile_path = os.path.join(PROFILES_DIR, filename)
+        if not os.path.exists(profile_path):
+            show_dialog(self, _("Error"), _("Perfil no encontrado"))
+            return
+
+        if os.path.exists(MONITOR_CONF):
+            shutil.copy2(MONITOR_CONF, PRECONF)
+
+        shutil.copy2(profile_path, MONITOR_CONF)
+        ok, output = hyprctl_reload()
+
+        if not ok:
+            if os.path.exists(PRECONF):
+                shutil.copy2(PRECONF, MONITOR_CONF)
+                hyprctl_reload()
+            show_dialog(self, _("Error al aplicar perfil"), output)
+            logging.error(_("Aplicar perfil {}: {}").format(filename, output))
+            self.refresh_monitors()
+            return
+
+        logging.info(_("Perfil aplicado: {}").format(filename))
+
+        profile_name = filename.replace(".conf", "")
+        dialog = Adw.MessageDialog.new(
+            self,
+            _("¿Funciona correctamente?"),
+            _("Perfil: {}\nSe revertirá en 10 segundos si no confirmas.").format(profile_name),
+        )
+        dialog.add_response("no", _("No, revertir"))
+        dialog.add_response("yes", _("Sí, mantener"))
+        dialog.set_default_response("yes")
+        dialog.set_response_appearance("yes", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_response_appearance("no", Adw.ResponseAppearance.DESTRUCTIVE)
+
+        expired = [False]
+
+        def on_response(d, resp):
+            if expired[0]:
+                return
+            if resp == "yes":
+                if os.path.exists(PRECONF):
+                    os.remove(PRECONF)
+                self.toast_overlay.add_toast(Adw.Toast(title=_("Perfil '{}' aplicado").format(profile_name)))
+                logging.info(_("Perfil confirmado: {}").format(filename))
+                self.refresh_monitors()
+            else:
+                self.restore_and_log(filename, profile_name)
+            d.close()
+
+        def on_close():
+            if not expired[0]:
+                self.restore_and_log(filename, profile_name)
+
+        dialog.connect("close-request", on_close)
+        dialog.present()
+
+        # Timeout: revertir si no se confirma en 10s
+        def on_timeout():
+            expired[0] = True
+            self.restore_and_log(filename, profile_name)
+            dialog.close()
+            return False
+
+        GLib.timeout_add(10000, on_timeout)
+
+        dialog.connect("response", on_response)
+        dialog.connect("close-request", on_close)
+        dialog.present()
+
+    def restore_and_log(self, filename, profile_name):
+        if os.path.exists(PRECONF):
+            shutil.copy2(PRECONF, MONITOR_CONF)
+            hyprctl_reload()
+            os.remove(PRECONF)
+            self.toast_overlay.add_toast(Adw.Toast(title=_("Perfil '{}' revertido").format(profile_name)))
+            logging.info(_("Perfil revertido: {}").format(filename))
+        self.refresh_monitors()
+
+    def on_help(self):
+        show_dialog(self, _("Ayuda"),
+            _("Arrastra los monitores en el canvas para cambiar su posición.\n\n"
+              "Usa los botones +/− para ajustar el zoom.\n\n"
+              "Selecciona un monitor para editar resolución, escala, posición y rotación.\n\n"
+              "Los perfiles guardados se pueden cargar desde el botón \"Cargar perfil\".")
+        )
+
+    def on_about(self):
+        about = Adw.AboutWindow(
+            application_name=_("MyDisplays"),
+            version="1.0",
+            developer_name=_("MyDisplays"),
+            comments=_("Gestor visual de monitores para Hyprland"),
+            license_type=Gtk.License.MIT_X11,
+        )
+        about.present()
+
+    def on_view_logs(self, *args):
+        if not os.path.exists(LOG_FILE):
+            show_dialog(self, _("Logs"), _("No hay logs aún."))
+            return
+        with open(LOG_FILE) as f:
+            content = f.read()
+        win = Adw.Window(transient_for=self)
+        win.set_title(_("Logs - MyDisplays"))
+        win.set_default_size(650, 450)
+        sw = Gtk.ScrolledWindow()
+        tv = Gtk.TextView()
+        tv.set_editable(False)
+        tv.set_monospace(True)
+        tv.get_buffer().set_text(content or _("(log vacío)"))
+        sw.set_child(tv)
+        win.set_content(sw)
+        win.present()
+
+    def on_toggle_warp(self, switch, *args):
+        active = switch.get_active()
+        if active:
+            self.start_warp()
+        else:
+            self.stop_warp()
+        self.save_warp_state()
+
+    def save_warp_state(self):
+        try:
+            with open(WARP_STATE_FILE, "w") as f:
+                f.write("1" if self.warp_switch.get_active() else "0")
+        except OSError:
+            pass
+
+    def load_warp_state(self):
+        try:
+            r = subprocess.run(
+                ["systemctl", "--user", "is-active", WARP_SERVICE],
+                capture_output=True, timeout=5,
+            )
+            active = r.stdout.decode().strip() == "active"
+
+            try:
+                with open(WARP_STATE_FILE) as f:
+                    pref = f.read().strip()
+            except (OSError, FileNotFoundError):
+                pref = "1" if active else "0"
+
+            r2 = subprocess.run(
+                ["systemctl", "--user", "is-enabled", WARP_SERVICE],
+                capture_output=True, timeout=5,
+            )
+            enabled = r2.stdout.decode().strip() == "enabled"
+
+            if pref == "1" and not enabled:
+                subprocess.run(
+                    ["systemctl", "--user", "enable", WARP_SERVICE],
+                    capture_output=True, timeout=5,
+                )
+            elif pref == "0" and enabled:
+                subprocess.run(
+                    ["systemctl", "--user", "disable", WARP_SERVICE],
+                    capture_output=True, timeout=5,
+                )
+
+            self.warp_switch.set_active(active)
+        except Exception:
+            logging.exception("Error en load_warp_state")
+
+    def start_warp(self):
+        subprocess.run(
+            ["systemctl", "--user", "enable", "--now", WARP_SERVICE],
+            capture_output=True, timeout=5,
+        )
+        logging.info("Easy Pointer iniciado")
+
+    def stop_warp(self):
+        subprocess.run(
+            ["systemctl", "--user", "disable", "--now", WARP_SERVICE],
+            capture_output=True, timeout=5,
+        )
+        logging.info("Easy Pointer detenido")
+
+
+def save_monitors_config(monitors):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(MONITOR_CONF, "w") as f:
+        f.write(serialize_monitors(monitors))
+
+
+def show_dialog(parent, title, msg):
+    dialog = Adw.MessageDialog.new(parent, title, msg)
+    dialog.add_response("ok", _("OK"))
+    dialog.set_default_response("ok")
+    dialog.present()
+
+
+def show_identify_overlay(app, name, mon_w, mon_h):
+    font_size = max(36, min(96, mon_h // 10))
+
+    css = Gtk.CssProvider()
+    css.load_from_string(f"""
+        window.identify-overlay {{
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 12px;
+        }}
+        window.identify-overlay label {{
+            font-size: {font_size}px;
+            font-weight: bold;
+            color: white;
+        }}
+    """)
+    display = Gdk.Display.get_default()
+    if display:
+        Gtk.StyleContext.add_provider_for_display(
+            display, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+    win = Gtk.Window(application=app)
+    win.add_css_class("identify-overlay")
+    Gtk4LayerShell.init_for_window(win)
+    Gtk4LayerShell.set_layer(win, Gtk4LayerShell.Layer.OVERLAY)
+    Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.TOP, True)
+    Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.BOTTOM, True)
+    Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.LEFT, True)
+    Gtk4LayerShell.set_anchor(win, Gtk4LayerShell.Edge.RIGHT, True)
+    Gtk4LayerShell.set_keyboard_mode(win, Gtk4LayerShell.KeyboardMode.NONE)
+    Gtk4LayerShell.set_namespace(win, "mydisplays-identify")
+
+    if display:
+        for m in display.get_monitors():
+            connector = getattr(m, "get_connector", lambda: None)()
+            if connector and connector.lower() == name.lower():
+                Gtk4LayerShell.set_monitor(win, m)
+                break
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    label = Gtk.Label(label=name)
+    label.set_halign(Gtk.Align.CENTER)
+    label.set_valign(Gtk.Align.CENTER)
+    label.set_hexpand(True)
+    label.set_vexpand(True)
+    box.append(label)
+    win.set_child(box)
+
+    click = Gtk.GestureClick()
+    click.connect("pressed", lambda *a: win.close())
+    win.add_controller(click)
+
+    win.set_opacity(0.0)
+    win.present()
+
+    start_us = GLib.get_monotonic_time()
+
+    def tick():
+        elapsed_ms = (GLib.get_monotonic_time() - start_us) / 1000
+        if elapsed_ms < 300:
+            win.set_opacity(elapsed_ms / 300.0)
+            return GLib.SOURCE_CONTINUE
+        win.set_opacity(1.0)
+        GLib.timeout_add_seconds(4, win.close)
+        return GLib.SOURCE_REMOVE
+
+    GLib.timeout_add(16, tick)
+
+
+class MyDisplaysApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id="com.mydisplays.app")
+        self.connect("activate", lambda app: MyDisplaysWindow(application=app).present())
+
+
+if __name__ == "__main__":
+    if "--identify" in sys.argv:
+        idx = sys.argv.index("--identify")
+        name = sys.argv[idx + 1]
+        mon_w = int(sys.argv[idx + 2])
+        mon_h = int(sys.argv[idx + 3])
+        safe_id = "com.mydisplays.identify." + name.replace("-", "_").replace(".", "_")
+        app = Gtk.Application(application_id=safe_id)
+        app.connect("activate", lambda app: show_identify_overlay(app, name, mon_w, mon_h))
+        app.run()
+        sys.exit(0)
+    if not check_single_instance():
+        print(_("MyDisplays ya está en ejecución."))
+        sys.exit(0)
+    app = MyDisplaysApp()
+    app.run()
